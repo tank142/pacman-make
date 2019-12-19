@@ -1,0 +1,824 @@
+#!/bin/bash
+source /etc/makepkg.conf
+export MARCH=`echo ${CFLAGS##*march=} | awk '{print $1}'`
+if [ -f ~/.config/pacman-make.conf ]
+then
+	source ~/.config/pacman-make.conf
+else
+	echo 'SKIP_PKG="firefox chromium"
+MAKE_DIR="/tmp"
+PKG_CACHE=~/".local/pkg"
+RM_PKG="*-doc*"' >> ~/.config/pacman-make.conf
+	if [[ $? == 0 ]]
+	then
+		echo -e "\e[1mСоздан файл конфигурации \e[1;33m~/.config/pacman-make.conf\e[0m"
+	else
+		echo -e "\e[1mОшибка при создании файла конфигурации.\e[0m"
+		exit
+	fi
+	source ~/.config/pacman-make.conf
+fi
+#Переменные
+export PKGlist
+export RETURN=0
+export ASEXPLICITlist=( `pacman -Qetq | tr '\n' ' '` )
+export tempDIR="$MAKE_DIR"/pacman-make
+export tempDIRBIG="$BIG_PKG_DIR"/pacman-make
+export PKG_CACHE=`realpath "$PKG_CACHE"`
+if [[ ${@} == *-h* ]]
+then
+		echo -e "\e[1;34mИнструмент для автоматической сборки пакетов.
+
+		\e[1;33m-h
+		\e[1;39mВывести этот текст помощи.
+
+		\e[1;33m-w
+		\e[1;39mНе устанавливать собранные пакеты.
+
+		\e[1;33m-A
+		\e[1;39mНе менять причину установки пакета.
+
+		\e[1;33m-m
+		\e[1;39mЗагружать не достающие пакеты без сборки.
+
+		\e[1;33m-chroot
+		\e[1;39mСборка в chroot окружении. (Не реализовано)
+
+		\e[1;33m-ssh
+		\e[1;39mСборка через ssh.
+
+		\e[1;33m-strap
+		\e[1;39mУстанавливает пакеты в указанный корневой каталог.
+
+		\e[1;33m-с
+		\e[1;39mОчистка кеша пакетов. (Не реализовано)
+
+		\e[1;34mКлючи для пересборки групп пакетов:
+		\e[1;33m-world
+		\e[1;33m-xorg
+		\e[1;33m-mesa
+		\e[1;33m-qt
+		\e[1;33m-base
+		"
+		exit
+fi
+if [[ "$P" == '' ]]
+	then
+	echo -n 'Пароль:'
+	read -s P
+	echo ''
+fi
+sudo --remove-timestamp
+sudo -S -v <<< "$P"
+case $? in
+	0)
+	;;
+	*)
+		exit 255
+	;;
+esac
+arg=( ${@} )
+for ((u=0; u < "${#arg[@]}"; u++))
+do
+	case "${arg[$u]}" in
+	-y)
+		sudo -S -v <<< "$P"
+		sudo pacman -Sy
+	;;
+	-A)
+		export A=1
+	;;
+	-m)
+		export NO_MAKE=1
+	;;
+	-w)
+		export NOT_INSTALL=1
+	;;
+	-chroot)
+		CHROOT_SETUP "$CHROOT"
+		export CH=1
+	;;
+	-ssh)
+		export SSH=1
+	;;
+	-strap)
+		export STRAP="${arg[$u]}"
+		export CHROOT_ACTIVE_MOUNTS=()
+	;;
+	-c)
+		
+	;;
+	*)
+		PKGlist="$PKGlist ${arg[$u]}"
+	;;
+	esac
+done
+if [[ "$@" != *-D* ]]
+then
+	if [ -d "$tempDIR" ]
+	then
+		rm -rf "$tempDIR"
+	fi
+	if [ -d "$tempDIRBIG" ]
+	then
+		rm -rf "$tempDIRBIG"
+	fi
+	if [ -d "$tempDIR" ]
+	then
+		rm -rf "$tempDIR"
+	fi
+	if [ -d ~/.cache/asp ]
+	then
+		rm -rf ~/.cache/asp
+	fi
+fi
+if ! [ -d "$PKG_CACHE/$MARCH" ]
+then
+	mkdir -p "$PKG_CACHE/$MARCH"
+fi
+if ! [ -d "$PKG_CACHE/x86-64" ]
+then
+	mkdir -p "$PKG_CACHE/x86-64"
+fi
+if ! [ -d "$tempDIRBIG" ]
+then
+	mkdir -p "$tempDIRBIG"
+fi
+if ! [ -d "$tempDIR" ]
+then
+	mkdir -p "$tempDIR"
+fi
+EXIT_ERROR()
+{
+	if [[ $1 != 0 ]];then
+		echo "ERROR: $1"
+		exit
+	fi
+}
+if [[ "$SSH" == "1" ]]
+then
+	ssh-agent
+	if [[ "$SSH_KEY" != '' ]]
+	then
+		if ! [ -f "$SSH_KEY" ]
+		then
+			ssh-keygen -f "$SSH_KEY"
+			EXIT_ERROR $?
+		else
+			ssh-add	"$SSH_KEY"
+			EXIT_ERROR $?
+		fi
+	 
+	fi
+fi
+MVPKG()
+{
+	mv -v ./*.pkg.* "$PKG_CACHE"/"$MARCH"/ | grep "'->'"
+}
+
+PACMANw()
+{
+	sudo -S -v <<< "$P"
+	echo "sudo pacman -Swdd "$1" --noconfirm --cachedir "$2""
+	sudo pacman -Swdd "$1" --noconfirm --cachedir "$2"
+	EXIT_ERROR $?
+}
+PACMANopt()
+{
+	if [[ "$A" != '1' ]]
+	then
+		if [[ "$PKGlist" == *$1* ]]
+		then
+			echo  '--asexplicit'
+		else
+			if [[ "${ASEXPLICITlist[@]}" == *$1* ]]
+			then
+				echo '--asexplicit'
+			else
+				echo '--asdeps'
+			fi
+		fi
+	else
+		if [[ "${ASEXPLICITlist[@]}" == *$1* ]]
+		then
+			echo '--asexplicit'
+		else
+			echo '--asdeps'
+		fi
+	fi
+	if [[ "$RM_PKG" != '' ]]
+	then
+		rm -rf $RM_PKG
+	fi
+}
+#---------------------------------------------------------
+CHECKPKGBUILD()
+{
+	source "$1"/PKGBUILD
+	if [[ "$pkgver" != "$2" ]]
+	then
+		#echo "Версия пакета не подошла: $VER $1/PKGBUILD"
+		return 1
+	fi
+	if [[ "$pkgrel" != "$3" ]]
+	then
+		#echo "Ревизия пакета не подошла: $REL $1/PKGBUILD"
+		return 1
+	fi
+	return 0
+}
+FINDPKGBUILD()
+{
+	local PKGBUILD D
+	PKGBUILD=(`find ./repos -name "PKGBUILD" -type f | sed -e '/[te]sting/d'`)
+	for ((u=0; u < "${#PKGBUILD[@]}"; u++))
+	do
+		D="`dirname "${PKGBUILD[$u]}"`"
+		`CHECKPKGBUILD "$D" "$1" "$2"`
+		if [[ 0 == "$?" ]]
+		then
+			cd "$D"
+			return 0
+		fi
+	done
+	PKGBUILD=(`find ./trunk -name "PKGBUILD" -type f`)
+	for ((u=0; u < "${#PKGBUILD[@]}"; u++))
+	do
+		D="`dirname "${PKGBUILD[$u]}"`"
+		`CHECKPKGBUILD "$D" "$1" "$2"`
+		if [[ 0 == "$?" ]]
+		then
+			cd "${PKGBUILD[$u]}"
+			return 0
+		fi
+	done
+	PKGBUILD=(`find ./repos/*testing* -name "PKGBUILD" -type f`)
+	for ((u=0; u < "${#PKGBUILD[@]}"; u++))
+	do
+		D="`dirname "${PKGBUILD[$u]}"`"
+		`CHECKPKGBUILD "${PKGBUILD[$u]}" "$1" "$2"`
+		if [[ 0 == "$?" ]]
+		then
+			cd "${PKGBUILD[$u]}"
+			return 0
+		fi
+	done
+	echo "$D $2 $3 ERROR: Не найден установочный скрипт с нужной версией пакета!" >> "$PKG_CACHE"/LOG.txt
+	echo "Не найден установочный скрипт с нужной версией пакета!"
+	return 1
+}
+if [ -f ~/.config/pacman-make-gcc.conf ]
+then
+	source ~/.config/pacman-make-gcc.conf
+	if [ -f /usr/bin/gcc ]
+	then
+		export cc=GCC_`gcc --version | head -n1 | awk '{print $3}' | tr -d '.'`
+	fi
+	if [ -f /usr/bin/gcc-8 ]
+	then
+		export cc8=GCC_`gcc-8 --version | head -n1 | awk '{print $3}' | tr -d '.'`
+	fi
+	GCC()
+	{
+		if [[ "${!cc}" != *" $1-$2-$3 "* && "${!cc}" != *" $1-$2 "* && "${!cc}" != *" $1 "* ]]
+		then
+			export CC=$(which gcc)
+			export CXX=$(which g++)
+			return 0
+		fi
+		if [[ "${!cc8}" != *" $1-$2-$3 "* && "${!cc}" != *" $1-$2 "* && "${!cc}" != *" $1 "* ]]
+		then
+			export CC=$(which gcc-8)
+			export CXX=$(which g++-8)
+			return 0
+		fi
+		unset CC CXX
+		return 1
+	}
+fi
+
+MAKEPKG()
+{
+	local ver=${2##*:}
+	GCC "$1" "$ver" "$3"
+	if [[ 0 != $? ]];then
+		return 1
+	fi
+	if [[ "$CH" == '1' ]]
+	then
+		exit
+		#chroot "$CHROOT" "pacman-make -w "
+	else
+		if [[ "$BIG_PKG" == *"$1"* ]]
+		then
+			cd "$tempDIRBIG"
+		else
+			cd "$tempDIR"
+		fi
+		asp checkout "$1"
+		cd ./*
+		FINDPKGBUILD "$ver" "$3"
+		if [[ 0 == "$?" ]]
+		then
+			sudo -S -v <<< "$P"
+			if [[ "$SSH" == '1' ]]
+			then
+				MAKEPKG_SSH "$1" "$ver" "$3"
+			else
+				makepkg -sf --skippgpcheck --noconfirm $MAKEOPT "$V"
+				local y=$?
+				MVPKG
+				case $y in
+					0)
+						rm -rf "$tempDIR"/*
+					;;
+					1)
+						RETURN=1
+						rm -rf "$tempDIR"/*
+						echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+						return 1
+					;;
+					4)
+						RETURN=1
+						echo "$1-$2-$3 ERROR: $y $CC $CXX" >> "$PKG_CACHE"/LOG.txt
+						rm -rf src pkg
+						export CC=$(which gcc-8)
+						export CXX=$(which g++-8)
+						makepkg -sf --skippgpcheck --noconfirm $MAKEOPT "$V"
+						local y=$?
+						case $y in
+							0)
+								rm -rf "$tempDIR"/*
+							;;
+							4)
+								rm -rf "$tempDIR"/*
+								echo "$1-$2-$3 ERROR: $y $CC $CXX" >> "$PKG_CACHE"/LOG.txt
+								return 4
+							;;
+							8)
+								echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+								exit 8
+							;;
+							*)
+								RETURN=1
+								rm -rf "$tempDIR"/*
+								echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+								return 99
+						esac
+					;;
+					8)
+						echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+						exit 8
+					;;
+					*)
+						RETURN=1
+						rm -rf "$tempDIR"/*
+						echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+						return 99
+					;;
+				esac
+			fi
+		else
+			rm -rf "$tempDIR"/*
+			case $SKIP_BAD_PKGBUILD in
+				YES)
+					return 44
+				;;
+				*$1*)
+					return 44
+				;;
+				*)
+					exit
+				;;
+			esac
+		fi
+		rm -rf "$tempDIR"/*
+	fi
+}
+CHECK_PKG_CACHE()
+{
+	echo "`find "$4" -maxdepth 1 -name "$1-$2-$3*.pkg.*" | head -n 1`"
+}
+CHROOT_ADD_MOUNT()
+{
+	if [[ `mount | grep "$2 "` ]]
+	then
+		CHROOT_ACTIVE_MOUNTS=("$2" "${CHROOT_ACTIVE_MOUNTS[@]}")
+	else
+		sudo -S -v <<< "$P"
+		sudo mount "$@" && CHROOT_ACTIVE_MOUNTS=("$2" "${CHROOT_ACTIVE_MOUNTS[@]}")
+	fi
+}
+CHROOT_SETUP()
+{
+	sudo -S -v <<< "$P"
+	sudo mkdir -m 0755 -p "$1"/var/{cache/pacman/pkg,lib/pacman,log} "$1"/{dev,run,etc/pacman.d}
+	sudo mkdir -m 1777 -p "$1"/tmp
+	sudo mkdir -m 0555 -p "$1"/{sys,proc}
+	CHROOT_ADD_MOUNT proc "$1/proc" -t proc -o nosuid,noexec,nodev &&
+	CHROOT_ADD_MOUNT sys "$1/sys" -t sysfs -o nosuid,noexec,nodev,ro &&
+	if [ -d /sys/firmware/efi/efivars ]
+	then
+		sudo -S -v <<< "$P"
+		sudo mkdir -p "$1/sys/firmware/efi/efivars"
+		CHROOT_ADD_MOUNT /sys/firmware/efi/efivars "$1/sys/firmware/efi/efivars" -t efivarfs -o nosuid,noexec,nodev
+	fi
+	CHROOT_ADD_MOUNT udev "$1/dev" -t devtmpfs -o mode=0755,nosuid &&
+	CHROOT_ADD_MOUNT devpts "$1/dev/pts" -t devpts -o mode=0620,gid=5,nosuid,noexec &&
+	CHROOT_ADD_MOUNT shm "$1/dev/shm" -t tmpfs -o mode=1777,nosuid,nodev &&
+	CHROOT_ADD_MOUNT /run "$1/run" --bind &&
+	CHROOT_ADD_MOUNT tmp "$1/tmp" -t tmpfs -o mode=1777,strictatime,nodev,nosuid
+	echo "Смонтировано: ${CHROOT_ACTIVE_MOUNTS[@]}"
+}
+PACMAN_TARGETS()
+{
+	if [[ "$STRAP" != "" ]];then
+		sudo -S -v <<< "$P"
+		sudo mkdir -p "$STRAP"/var/lib/pacman/
+		sudo pacman -r "$STRAP" --config "$STRAP"/etc/pacman.conf -Sy
+		eval targets=( `sudo pacman -r "$STRAP" --config "$STRAP"/etc/pacman.conf $1 $2 --print | sed '/'.pkg.'/!d'` )
+	else
+		eval targets=( `pacman $1 $2 --print | sed '/'.pkg.'/!d'` )
+	fi
+	for ((u=0; u < "${#targets[@]}"; u++))
+	do
+		case "${@}" in
+		*...*)
+			echo "..."
+		;;
+		*)
+			pkg=${targets[$u]}
+			ver=${pkg%-*}
+			rel=${ver##*-}
+			ver=${ver%-*}
+			ver=${ver##*-}
+			pkg=${pkg%-*}
+			pkg=${pkg%-*}
+			pkg=${pkg%-*}
+			pkg=${pkg##*/}
+			PKG[$u]="$pkg"
+			VER[$u]="$ver"
+			REL[$u]="$rel"
+			OPT[$u]="`PACMANopt "$pkg"`"
+			CACHE[$u]=' '
+			echo "${PKG[$u]}"-"${VER[$u]}"-"${REL[$u]}" "${OPT[$u]}"
+		;;
+		esac
+	done
+	unset u targets pkg ver rel
+}
+PACMAN_MAKE()
+{
+	rm -rf "$PKG_CACHE"/LOG.txt
+	eval REP=( `pacman -Slq $REPOS` )
+	for ((X=0; X < "${#PKG[@]}"; X++))
+	do
+		CACHE[$X]="`CHECK_PKG_CACHE "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}" "$PKG_CACHE/$MARCH"`"
+		if [[ "${CACHE[$X]}" == '' ]]
+		then
+			if [[ `CHECK_SKIP_PKG "${PKG[$X]}"` == 1 ]]
+			then
+				CACHE[$X]="`CHECK_PKG_CACHE "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}" "$PKG_CACHE/x86-64"`"
+				if [[ "${CACHE[$X]}" == "" ]]
+				then
+					PACMANw "${PKG[$X]}" "$PKG_CACHE/x86-64/"
+					CACHE[$X]="`CHECK_PKG_CACHE "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}" "$PKG_CACHE/x86-64"`"
+					if [[ "${CACHE[$X]}" == "" ]]
+					then
+						echo "Ошибка, < "${PKG[$X]}"-"${VER[$X]}"-"${REL[$X]}" > не найден."
+						return 10
+					else
+						echo "Загружен: "${CACHE[$X]}""
+					fi
+				else
+					echo "Найден: "${CACHE[$X]}""
+				fi
+			else
+				if [[ "$NO_MAKE" != "1" ]]
+				then
+					for ((u=0; u < "${#REP[@]}"; u++))
+					do
+						if [[ "${REP[$u]}" == "${PKG[$X]}" ]]
+						then
+							MAKEPKG "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}"
+							break
+						fi
+					done
+				fi
+				CACHE[$X]="`CHECK_PKG_CACHE "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}" "$PKG_CACHE/$MARCH"`"
+				if [[ "${CACHE[$X]}" == "" ]]
+				then
+					CACHE[$X]="`CHECK_PKG_CACHE "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}" "$PKG_CACHE/x86-64"`"
+					if [[ "${CACHE[$X]}" == "" ]]
+					then
+						PACMANw "${PKG[$X]}" "$PKG_CACHE/x86-64/"
+						CACHE[$X]="`CHECK_PKG_CACHE "${PKG[$X]}" "${VER[$X]}" "${REL[$X]}" "$PKG_CACHE/x86-64"`"
+							if [[ "${CACHE[$X]}" == "" ]]
+							then
+								echo "Ошибка, < "${PKG[$X]}"-"${VER[$X]}"-"${REL[$X]}" > не найден."
+								return 10
+							else
+								echo "Загружен: "${CACHE[$X]}""
+							fi
+					else
+						echo "Найден: "${CACHE[$X]}""
+					fi
+				else
+					echo "Собран: "${CACHE[$X]}""
+				fi
+				
+			fi
+		else
+			echo "Найден: "${CACHE[$X]}""
+		fi
+	done
+	if [[ "$NOT_INSTALL" != '1' ]]
+	then
+		for ((X=0; X < "${#PKG[@]}"; X++))
+		do
+			if [[ "${OPT[$X]}" == "--asdeps" ]];then
+				install_asdeps="$install_asdeps ${CACHE[$X]} "
+			fi
+		done
+		for ((X=0; X < "${#PKG[@]}"; X++))
+		do
+			if [[ "${OPT[$X]}" == "--asexplicit" ]];then
+				install_asexplicit="$install_asexplicit ${CACHE[$X]} "
+			fi
+		done
+		if [[ "$STRAP" != "" ]];then
+			CHROOT_SETUP "$STRAP"
+			local Uasexplicit Uasdeps
+			for ((X=0; X < "${#PKG[@]}"; X++))
+			do
+				if [[ "${PKG[$X]}" == "glibc" ]];then
+					if [[ "${OPT[$X]}" == "--asexplicit" ]];then
+						sudo pacman -r "$STRAP" -Udd "${CACHE[$X]}" --asexplicit --needed --noconfirm
+					else
+						sudo pacman -r "$STRAP" -Udd "${CACHE[$X]}" --asdeps --needed --noconfirm
+					fi
+				fi
+			done
+			for ((X=0; X < "${#PKG[@]}"; X++))
+			do
+				if [[ "${PKG[$X]}" == "filesystem" || "${PKG[$X]}" == "gcc-libs" || "${PKG[$X]}" == "ncurses" || "${PKG[$X]}" == "readline" || "${PKG[$X]}" == "bash" || "${PKG[$X]}" == "bzip2" || "${PKG[$X]}" == "attr" || "${PKG[$X]}" == "coreutils" || "${PKG[$X]}" == "pacman" || "${PKG[$X]}" == "kmod" || "${PKG[$X]}" == "acl" || "${PKG[$X]}" == "libcap" || "${PKG[$X]}" == "pcre2" || "${PKG[$X]}" == "cryptsetup" || "${PKG[$X]}" == "libgcrypt" || "${PKG[$X]}" == "iptables" || "${PKG[$X]}" == "libutil-linux" || "${PKG[$X]}" == "libseccomp" || "${PKG[$X]}" == "libidn2" || "${PKG[$X]}" == "xz" || "${PKG[$X]}" == "lz4" || "${PKG[$X]}" == "zlib" || "${PKG[$X]}" == "device-mapper" || "${PKG[$X]}" == "openssl" || "${PKG[$X]}" == "argon2" || "${PKG[$X]}" == "json-c" || "${PKG[$X]}" == "libgpg-error" || "${PKG[$X]}" == "libunistring" || "${PKG[$X]}" == "systemd-libs" ]];then
+					if [[ "${OPT[$X]}" == "--asexplicit" ]];then
+						Uasexplicit="$Uasexplicit ${CACHE[$X]}"
+					else
+						Uasdeps="$Uasdeps ${CACHE[$X]}"
+					fi
+				fi
+			done
+			sudo pacman -r "$STRAP" -Udd $Uasexplicit --asexplicit --needed --noconfirm
+			sudo pacman -r "$STRAP" -Udd $Uasdeps --asdeps --needed --noconfirm
+			unset Uasexplicit Uasdeps
+			for ((X=0; X < "${#PKG[@]}"; X++))
+			do
+				if [[ "${PKG[$X]}" == "systemd" ]];then
+					if [[ "${OPT[$X]}" == "--asexplicit" ]];then
+						sudo pacman -r "$STRAP" -Udd "${CACHE[$X]}" --asexplicit --needed --noconfirm
+					else
+						sudo pacman -r "$STRAP" -Udd "${CACHE[$X]}" --asdeps --needed --noconfirm
+					fi
+				fi
+			done
+			if [[ "$install_asdeps" != "" ]];then
+				echo "sudo pacman -r "$STRAP" -U $install_asdeps --asdeps"
+				sudo -S -v <<< "$P"
+				sudo pacman -r "$STRAP" -Udd $install_asdeps --asdeps --noconfirm
+			fi
+			if [[ "$install_asexplicit" != "" ]];then
+				sudo -S -v <<< "$P"
+				echo "sudo pacman -r "$STRAP" -U $install_asexplicit --asexplicit"
+				sudo pacman -r "$STRAP" -Udd $install_asexplicit --asexplicit --noconfirm
+			fi
+			echo "sudo umount ${CHROOT_ACTIVE_MOUNTS[@]}"
+			sudo -S -v <<< "$P"
+			sudo umount ${CHROOT_ACTIVE_MOUNTS[@]}
+		else
+			if [[ "$install_asdeps" != "" ]];then
+				echo "sudo pacman -U $install_asdeps --asdeps"
+				sudo -S -v <<< "$P"
+				sudo pacman -Udd $install_asdeps --asdeps --noconfirm
+			fi
+			if [[ "$install_asexplicit" != "" ]];then
+				sudo -S -v <<< "$P"
+				echo "sudo pacman -U $install_asexplicit --asexplicit"
+				sudo pacman -Udd $install_asexplicit --asexplicit --noconfirm
+				EXIT_ERROR $?
+			fi
+		fi
+
+	fi
+}	
+if [[ "$SSH" == '1' ]]
+then
+#---SSH---Потдержка-сборки-на-удалённой-машине------------
+	export SSH_PKG_CACHE=`ssh $SSH_IP -p $SSH_PORT -x "cat ~/.config/pacman-make.conf | grep 'PKG_CACHE=' | cut -f2 -d"=""`
+	export SKIP_PKG_SSH=`ssh $SSH_IP -p $SSH_PORT -x "cat ~/.config/pacman-make.conf | grep 'SKIP_PKG=' | cut -f2 -d"=""`
+	if [[ `ssh $SSH_IP -p $SSH_PORT -x "md5sum ~/.config/makepkg.conf" | awk '{print $1}'` != `md5sum /etc/makepkg.conf | awk '{print $1}'` ]]; then
+		scp -P $SSH_PORT "/etc/makepkg.conf" $SSH_IP:"~/.config/makepkg.conf"
+	fi
+	if [[ "$@" == *-y* ]]; then
+		ssh $SSH_IP -p $SSH_PORT -Xyt "sudo pacman -Syu"
+	fi
+	ssh $SSH_IP -p $SSH_PORT -Xyt "mkdir -p "$SSH_MAKE_DIR""
+	MAKEPKG_SSH()
+	{
+		local file=`ssh $SSH_IP -p $SSH_PORT -x "find "$SSH_PKG_CACHE"/$MARCH -maxdepth 1 -name "*$1-$2-$3*" | head -n 1"`
+		if [[ "$file" != "" ]]; then
+			echo "Найден $SSH_IP -> $file"
+			scp -P $SSH_PORT $SSH_IP:"$file" "$PKG_CACHE/$MARCH/"
+			EXIT_ERROR $?
+		else
+			ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && rm -rf ./* "$V""
+			scp -P $SSH_PORT ./* "$SSH_IP":"$SSH_MAKE_DIR"
+			ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && CC="$CC" CXX="$CXX" makepkg -sf --skippgpcheck --noconfirm --config ~/.config/makepkg.conf "$V""
+			local R=$?
+			case $R in
+				0)
+					scp -P $SSH_PORT $SSH_IP:"$SSH_MAKE_DIR/*.pkg.*" "$PKG_CACHE/$MARCH"
+					ssh $SSH_IP -p $SSH_PORT -Xyt "mv "$SSH_MAKE_DIR/*.pkg.*" "$SSH_PKG_CACHE/$MARCH/""
+				;;
+				4)
+					echo "$1-$2-$3 ERROR: $y $CC $CXX" >> "$PKG_CACHE"/LOG.txt
+					ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && rm -rf src pkg"
+					ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && CC=$(which gcc-8) CXX=$(which g++-8) makepkg -sf --skippgpcheck --noconfirm --config ~/.config/makepkg.conf "$V""
+					local R=$?
+					case $y in
+						0)
+							rm -rf "$tempDIR"/*
+						;;
+						4)
+							echo "$1-$2-$3 ERROR: $y $CC $CXX" >> "$PKG_CACHE"/LOG.txt
+							local y=$?
+							case $y in
+								0)
+									rm -rf "$tempDIR"/*
+								;;
+								4)
+									rm -rf "$tempDIR"/*
+									echo "$1-$2-$3 ERROR: $y $CC $CXX" >> "$PKG_CACHE"/LOG.txt
+									return 4
+								;;
+								8)
+									echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+									exit 8
+								;;
+								*)
+									RETURN=1
+									rm -rf "$tempDIR"/*
+									echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+									return 99
+							esac
+						;;
+						8)
+							echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+							exit 8
+						;;
+						*)
+							RETURN=1
+							rm -rf "$tempDIR"/*
+							echo "$1-$2-$3 ERROR: $y" >> "$PKG_CACHE"/LOG.txt
+							return 99
+					esac
+				;;
+			esac
+			ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && rm -rf ./* "$V""
+			return $R
+		fi
+	}
+	rm -rf "$tempDIR"/*
+fi
+#---------------------------------------------------------
+CHECK_SKIP_PKG()
+{
+		for ((c=0; c < "${#SKIP_PKG[@]}"; c++))
+		do
+			if [[ $1 == ${SKIP_PKG[$c]} ]]
+			then
+				echo 1
+				exit 1
+			fi
+		done
+}
+case "${@}" in
+	*-world*)
+		export A=1
+		world=( `pacman -Qnq` )
+		for ((u=0; u < "${#base[@]}"; u++))
+		do
+			for ((b=0; b < "${#all[@]}"; b++))
+			do
+				if [[ `CHECK_SKIP_PKG "${base[$u]}"` != '1' ]]
+				then
+					TARGETS="$TARGETS ${base[$u]}"
+					break
+				fi
+			done
+
+		done
+		PACMAN_TARGETS '-S' "$(pacman -Qnq)"
+		PACMAN_MAKE
+	;;
+	*-xorg*)
+		export A=1
+		base=( `pacman -Sgq xorg xorg-drivers xorg-apps` libxxf86vm libxxf86misc libxxf86dga lib32-libxxf86vm imwheel boinc-nox xorg-appres xorg-oclock libdrm libepoxy )
+		all=( `pacman -Qnq` )
+		for ((u=0; u < "${#base[@]}"; u++))
+		do
+			for ((b=0; b < "${#all[@]}"; b++))
+			do
+				if [[ "${all[$b]}" == "${base[$u]}" && "$SKIP_PKG" != *"${base[$u]}"* && `CHECK_SKIP_PKG "${base[$u]}"` != '1' ]]
+				then
+					TARGETS="$TARGETS ${base[$u]}"
+					break
+				fi
+			done
+
+		done
+		PACMAN_TARGETS '-S' "$TARGETS"
+		unset TARGETS base all
+		PACMAN_MAKE
+	;;
+	*-mesa*)
+		export A=1
+		base=( `pacman -Ssq mesa` )
+		all=( `pacman -Qnq` )
+		for ((u=0; u < "${#base[@]}"; u++))
+		do
+			for ((b=0; b < "${#all[@]}"; b++))
+			do
+				if [[ "${all[$b]}" == "${base[$u]}" && "$SKIP_PKG" != *"${base[$u]}"* && `CHECK_SKIP_PKG "${base[$u]}"` != '1' ]]
+				then
+					TARGETS="$TARGETS ${base[$u]}"
+					break
+				fi
+			done
+
+		done
+		PACMAN_TARGETS '-S' "$TARGETS"
+		unset TARGETS base all
+		PACMAN_MAKE
+	;;
+	*-qt*)
+		export A=1
+		base=( `pacman -Sgq qt` )
+		all=( `pacman -Qnq` )
+		for ((u=0; u < "${#base[@]}"; u++))
+		do
+			for ((b=0; b < "${#all[@]}"; b++))
+			do
+				if [[ "${all[$b]}" == "${base[$u]}" && "$SKIP_PKG" != *"${base[$u]}"* && `CHECK_SKIP_PKG "${base[$u]}"` != '1' ]]
+				then
+					TARGETS="$TARGETS ${base[$u]}"
+					break
+				fi
+			done
+
+		done
+		PACMAN_TARGETS '-S' "$TARGETS"
+		unset TARGETS base all
+		PACMAN_MAKE
+	;;
+	*-base*)
+		export A=1
+		base=( `pacman -Sgq base` )
+		all=( `pacman -Qnq` )
+		for ((u=0; u < "${#base[@]}"; u++))
+		do
+			for ((b=0; b < "${#all[@]}"; b++))
+			do
+				if [[ "${all[$b]}" == "${base[$u]}" && "$SKIP_PKG" != *"${base[$u]}"* && `CHECK_SKIP_PKG "${base[$u]}"` != '1' ]]
+				then
+					TARGETS="$TARGETS ${base[$u]}"
+					break
+				fi
+			done
+
+		done
+		PACMAN_TARGETS '-S' "$TARGETS"
+		unset TARGETS base all
+		PACMAN_MAKE
+	;;
+	*-U*)
+		PACMAN_TARGETS "$PKGlist"
+		PACMAN_MAKE
+	;;
+	*)
+		if [[  "$PKGlist" != '' ]]
+		then
+			PACMAN_TARGETS '-S' "$PKGlist"
+			PACMAN_MAKE
+		else
+			PACMAN_TARGETS '-Su'
+			PACMAN_MAKE
+		fi
+	;;
+esac
+if [[ $RETURN == 1 ]]
+then
+	$EDIT "$PKG_CACHE"/LOG.txt
+fi
+rm -rf "$tempDIR"
+exit $RETURN
