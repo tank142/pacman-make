@@ -53,6 +53,9 @@ then
 		\e[1;33m-с
 		\e[1;39mОчистка кеша пакетов. (Не реализовано)
 
+		\e[1;33m-D
+		\e[1;39mНе очищать папки.
+
 		\e[1;34mКлючи для пересборки групп пакетов:
 		\e[1;33m-world
 		\e[1;33m-xorg
@@ -270,33 +273,31 @@ FINDPKGBUILD()
 if [ -f ~/.config/pacman-make-gcc.conf ]
 then
 	source ~/.config/pacman-make-gcc.conf
-	if [ -f /usr/bin/gcc ]
-	then
-		export cc=GCC_`gcc --version | head -n1 | awk '{print $3}' | tr -d '.'`
-	fi
-	if [ -f /usr/bin/gcc-8 ]
-	then
-		export cc8=GCC_`gcc-8 --version | head -n1 | awk '{print $3}' | tr -d '.'`
-	fi
-	GCC()
-	{
-		if [[ "${!cc}" != *" $1-$2-$3 "* && "${!cc}" != *" $1-$2 "* && "${!cc}" != *" $1 "* ]]
-		then
-			export CC=$(which gcc)
-			export CXX=$(which g++)
-			return 0
-		fi
-		if [[ "${!cc8}" != *" $1-$2-$3 "* && "${!cc}" != *" $1-$2 "* && "${!cc}" != *" $1 "* ]]
-		then
-			export CC=$(which gcc-8)
-			export CXX=$(which g++-8)
-			return 0
-		fi
-		unset CC CXX
-		return 1
-	}
 fi
-
+if [ -f /usr/bin/gcc ]
+then
+	export cc=GCC_`gcc --version | head -n1 | awk '{print $3}' | tr -d '.'`
+	export CC=$(which gcc)
+	export CXX=$(which g++)
+fi
+if [ -f /usr/bin/gcc-8 ]
+then
+	export cc8=GCC_`gcc-8 --version | head -n1 | awk '{print $3}' | tr -d '.'`
+	export CC=$(which gcc-8)
+	export CXX=$(which g++-8)
+fi
+GCC()
+{
+	if [[ "${!cc}" != *" $1-$2-$3 "* && "${!cc}" != *" $1-$2 "* && "${!cc}" != *" $1 "* ]]
+	then
+		return 0
+	fi
+	if [[ "${!cc8}" != *" $1-$2-$3 "* && "${!cc}" != *" $1-$2 "* && "${!cc}" != *" $1 "* ]]
+	then
+		return 0
+	fi
+	return 1
+}
 MAKEPKG()
 {
 	local ver=${2##*:}
@@ -642,8 +643,7 @@ then
 				;;
 				4)
 					echo "$1-$2-$3 ERROR: $y $CC $CXX" >> "$PKG_CACHE"/LOG.txt
-					ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && rm -rf src pkg"
-					ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && CC=$(which gcc-8) CXX=$(which g++-8) makepkg -sf --skippgpcheck --noconfirm --config ~/.config/makepkg.conf "$V""
+					ssh $SSH_IP -p $SSH_PORT -Xyt "cd "$SSH_MAKE_DIR" && rm -rf src pkg && CC=$(which gcc-8) CXX=$(which g++-8) makepkg -sf --skippgpcheck --noconfirm --config ~/.config/makepkg.conf "$V""
 					local R=$?
 					case $y in
 						0)
